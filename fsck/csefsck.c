@@ -15,7 +15,7 @@
 #define MAX_BLOCK_NUM_LENGTH 10
 #define MAX_FILE_NAME_LENGTH 50
 #define BLOCK_SIZE 4096
-
+#define INVALID_TIME(t) t > (time_t)time(NULL) 
 enum fs_types {directory, file};
 typedef enum fs_types FILE_TYPE;
 // fs_time_wcx
@@ -40,17 +40,6 @@ struct fs_entry_wcx
 	int inodeNumber;
 };
 typedef struct fs_entry_wcx FS_ENTRY;
-// fs_wcx
-// fs struct
-struct fs_wcx
-{
-	size_t creationTime;
-	int mounted;
-	int devId;
-	int freeStart, freeEnd, root;
-	int maxBlocks;
-};
-typedef struct fs_wcx FS;
 
 // Inode
 // Basic inode info struct for both file & directory
@@ -75,7 +64,21 @@ typedef struct{
 	int location;
 }FILE_INODE;
 
+// fs_wcx
+// fs struct
+struct fs_wcx
+{
+	size_t creationTime;
+	int mounted;
+	int devId;
+	int freeStart, freeEnd, root;
+	int maxBlocks;
+	//DIR_INODE *rootDir;
+};
+typedef struct fs_wcx FS;
+
 int ReadFile(int blockId);
+int CheckDir(DIR_INODE *dInode);
 // get block file path
 // : fusedata.*
 void BlockPathWithIndex(int n, char* path){
@@ -110,6 +113,9 @@ int ReadNthBlock(int n, char* buffer){
 }
 
 // Load fs info from super block
+// Check super block format if correct or not
+// Check DevId
+// Check creation time is valid
 int LoadFS(FS *fs){
 	char buffer[BLOCK_SIZE];
 	ReadNthBlock(SUPER_BLOCK_NUMBER, buffer);
@@ -127,7 +133,7 @@ int LoadFS(FS *fs){
 		return -1;
 	}
 	// check creation time
-	if(fs->creationTime >= (time_t)time(NULL)){
+	if(INVALID_TIME(fs->creationTime)){
 		printf("File system creation time is in the future\n");
 		return -2;
 	}
@@ -183,7 +189,12 @@ int setLinkEntry(FS_ENTRY *entry, char *buffer, int entryNum){
 		count++;
 		if(count > entryNum){
 			printf("%s\n", "Entry number exceeds the number in the inode");
+			return -1;
 		}
+	}
+	if(count < entryNum){
+		printf("Entry number is fewer than directory link count!\n");
+		return -2;
 	}
 	return 0;
 }
@@ -207,22 +218,6 @@ int LoadLinkEntry(DIR_INODE *dInode, char* buffer){
 	dInode->dirRootEntry = (FS_ENTRY*) malloc(dInode->inode_basic.linkCount*sizeof(FS_ENTRY));
 	entryStart += sizeof("filename_to_inode_dict: {") - 1; 	// move the start of the buffer after '{'
 	setLinkEntry(dInode->dirRootEntry, entryStart, dInode->inode_basic.linkCount);
-	/*
-	for(i=0; i<tempLinkCount; i++){
-		setCount2 = sscanf(entryStart, "%c:%s:%d", &entryType, entryFileName, &entryInodeNumber);
-		strncpy(&(dInode->dirRootEntry[i].type), &entryType, sizeof(char));
-		strncpy(dInode->dirRootEntry[i].fileName, entryFileName, strlen(entryFileName)+1);
-		dInode->dirRootEntry[i].inodeNumber = entryInodeNumber;
-		//&(dInode->dirRootEntry[i].type), &(dInode->dirRootEntry[i].fileName), &(dInode->dirRootEntry[i].inodeNumber));
-		if(setCount2 != 3){
-			printf("Invalid linkEntry Format in %s\n", entryStart);
-			printf("set %d attributes in entry\n", setCount2);
-			return -3;
-		}
-		entryStart += sizeof(char) + strlen(entryFileName) + sizeof(int) + 4; // move the ptr to next entry
-		printf("Entry %d is: %c %s %d", i, entryType, entryFileName, entryInodeNumber);
-	}
-	*/
 	return 0;
 }
 
@@ -242,21 +237,16 @@ int LoadFileEntry(FILE_INODE *fInode, char *buffer){
 
 // Read directory INODE
 int ReadDir(int blockId){
+	int valid;
+	printf("Read Dir block num:%d", blockId);
 	char buffer[BLOCK_SIZE];
 	DIR_INODE *dInode = (DIR_INODE*)malloc(sizeof(DIR_INODE));
 	dInode->inode_basic.type = directory;
 	ReadNthBlock(blockId, buffer);
 	LoadInodeInfoFromBuffer(&dInode->inode_basic, buffer);	// load basic info to Inode
 	LoadLinkEntry(dInode, buffer);	// load link entries into Inode
-	// Check whether has '.' && '..' directory
-	for(int i=0; i<dInode->inode_basic.linkCount; i++){
-		if(dInode->dirRootEntry[i].type == 'f'){
-			ReadFile(dInode->dirRootEntry[i].inodeNumber);
-		}
-		if(dInode->dirRootEntry[i].type == 'd' && strcmp(dInode->dirRootEntry[i].fileName,"..") && strcmp(dInode->dirRootEntry[i].fileName,".")){
-			printf("dir_block_id:%d entryIndex:%d\n", blockId, i);
-			ReadDir(dInode->dirRootEntry[i].inodeNumber);
-		}
+	if((valid = CheckDir(dInode))){
+		return -1;
 	}
 	// free the DIR_INODE
 	if(dInode->dirRootEntry)	free(dInode->dirRootEntry);
@@ -265,21 +255,102 @@ int ReadDir(int blockId){
 	return 0;
 }
 
+/*--------------------------------------------------------------------------------------*/
+/* check part:
+ * check Dir
+ * check file, indirect & size
+ * check free blocks
+*/
+// check whether time are in the future
+ int CheckTime(FS_TIME t){
+ 	if(INVALID_TIME(t.atime)){
+ 		printf("Invalid atime\n");
+ 		return -1;
+ 	}
+ 	if(INVALID_TIME(t.mtime)){
+ 		printf("Invalid mtime\n");
+ 		printf("%ld\n", t.mtime);
+ 		return -2;
+ 	}
+ 	if(INVALID_TIME(t.ctime)){
+ 		printf("Invalid ctime\n");
+ 		return -3;
+ 	}
+ 	return 0;
+ }
+ // linkcount has been checked when readDir
+ // check whether the dir has '.' && '..'
+int CheckDir(DIR_INODE *dInode){
+	int currentDirExist = 0, parentDirExist = 0;
+	for(int i=0; i<dInode->inode_basic.linkCount; i++){
+		if(dInode->dirRootEntry[i].type == 'f'){
+			ReadFile(dInode->dirRootEntry[i].inodeNumber);	//  load and check the file
+		}
+		if(dInode->dirRootEntry[i].type == 'd'){
+			if(!strcmp(dInode->dirRootEntry[i].fileName,"..")){
+				parentDirExist = 1;
+				continue;
+			}
+			if(!strcmp(dInode->dirRootEntry[i].fileName,".")){
+				currentDirExist = 1;
+				continue;
+			}
+			ReadDir(dInode->dirRootEntry[i].inodeNumber);
+		}
+	}
+	
+	if(!currentDirExist){
+		printf("Current Dir miss!\n");
+		return -1;
+	}
+	if(!currentDirExist){
+		printf("Parent Dir miss!\n");
+		return -2;
+	}
+	if(CheckTime(dInode->inode_basic.timeInfo)){
+		return -3;
+	}
+	return 0;
+}
+
+
+// check file
+// time is valid
+// location is vector or not
+// check size
+int CheckFile(FILE_INODE *fInode){
+	int valid;
+	char buffer[BLOCK_SIZE];
+	if((valid = CheckTime(fInode->inode_basic.timeInfo))){
+		return -1;
+	}
+	ReadNthBlock(fInode->location, buffer);
+	return 0;
+}
+
 // Read file INODE
 int ReadFile(int blockId){
+	printf("Read file block Id: %d\n", blockId);
 	char buffer[BLOCK_SIZE];
 	FILE_INODE *fInode = (FILE_INODE*)malloc(sizeof(FILE_INODE));
 	fInode->inode_basic.type= file;
 	ReadNthBlock(blockId, buffer);
 	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load basic info to Inode
 	LoadFileEntry(fInode, buffer);
-
+	// check the 
 	free(fInode);
 	return 0;
 }
 int main(){
+	int valid;
 	FS *fs = (FS*)malloc(sizeof(FS));
-	LoadFS(fs);
-	ReadDir(fs->root);
+	if((valid = LoadFS(fs))){	// load super block and check
+		printf("Super block invalid\n");
+		return 0;
+	}
+	if((valid = ReadDir(fs->root))){	// load root dir and check
+		printf("Read root dir failed\n");
+		return 0;
+	}
 	free(fs);
 }
