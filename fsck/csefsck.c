@@ -149,12 +149,35 @@ int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer){
 	return 0;
 }
 
+// set link entry
+// f:name.txt:122
+int setLinkEntry(FS_ENTRY *entry, char *buffer, int entryNum){
+	char *tok;
+	const char comma[1] = ":";
+	const char semi[2] = ",}";
+	int count = 0;
+	tok = strtok(buffer, comma);
+	while(tok != NULL){
+		entry[count].type = *(tok+strlen(tok)-1);
+		tok = strtok(NULL, comma);
+		sscanf(tok, "%s", entry[count].fileName);
+		tok = strtok(NULL, semi);
+		sscanf(tok, "%d",&entry[count].inodeNumber);
+		tok = strtok(NULL, comma);
+		printf("%c %s %d\n", entry[count].type, entry[count].fileName, entry[count].inodeNumber);
+		count++;
+		if(count > entryNum){
+			printf("%s\n", "Entry number exceeds the number in the inode");
+		}
+	}
+	return 0;
+}
+
 // Load link entries for DIR_INODE
 // linkcount:4, filename_to_inode_dict:  {f:foo:1234 ...
 int LoadLinkEntry(DIR_INODE *dInode, char* buffer){
-	char *linkStart, *entryStart, entryType;
-	char entryFileName[MAX_FILE_NAME_LENGTH];
-	int tempLinkCount, setCount1, setCount2, i, entryInodeNumber;
+	char *linkStart, *entryStart;
+	int tempLinkCount, setCount1;
 	// make sure "linkCount" && "filename_to_inode_dict"
 	// are correctly existed in the inode
 	if(!(linkStart = strstr(buffer, "linkcount")) || !(entryStart = strstr(buffer, "filename_to_inode_dict"))){
@@ -168,6 +191,8 @@ int LoadLinkEntry(DIR_INODE *dInode, char* buffer){
 	// alllocate space for dirRootEntry
 	dInode->dirRootEntry = (FS_ENTRY*) malloc(tempLinkCount*sizeof(FS_ENTRY));
 	entryStart += sizeof("filename_to_inode_dict: {") - 1; 	// move the start of the buffer after '{'
+	setLinkEntry(dInode->dirRootEntry, entryStart, tempLinkCount);
+	/*
 	for(i=0; i<tempLinkCount; i++){
 		setCount2 = sscanf(entryStart, "%c:%s:%d", &entryType, entryFileName, &entryInodeNumber);
 		strncpy(&(dInode->dirRootEntry[i].type), &entryType, sizeof(char));
@@ -182,6 +207,7 @@ int LoadLinkEntry(DIR_INODE *dInode, char* buffer){
 		entryStart += sizeof(char) + strlen(entryFileName) + sizeof(int) + 4; // move the ptr to next entry
 		printf("Entry %d is: %c %s %d", i, entryType, entryFileName, entryInodeNumber);
 	}
+	*/
 	return 0;
 }
 
@@ -195,10 +221,17 @@ int ReadDir(int blockId){
 	// free the DIR_INODE
 	if(dInode->dirRootEntry)	free(dInode->dirRootEntry);
 	free(dInode);
-	printf("%s\n", buffer);
+	
 	return 0;
 }
 
+// Read file INODE
+int ReadFile(int blockId){
+	char buffer[BLOCK_SIZE];
+	FILE_INODE *fInode = (FILE_INODE*)malloc(sizeof(FILE_INODE));
+	ReadNthBlock(blockId, buffer);
+	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load 
+}
 int main(){
 	FS *fs = (FS*)malloc(sizeof(FS));
 	LoadFS(fs);
