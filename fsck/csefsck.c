@@ -59,6 +59,7 @@ struct inode_wcx
 	FILE_TYPE type;
 	size_t size;
 	int uid, gid, mode;
+	int linkCount;
 	FS_TIME timeInfo;
 };
 typedef struct inode_wcx INODE;
@@ -66,7 +67,6 @@ typedef struct inode_wcx INODE;
 typedef struct
 {
 	INODE inode_basic;
-	int linkCount;
 	FS_ENTRY *dirRootEntry;
 }DIR_INODE;
 typedef struct{
@@ -74,6 +74,8 @@ typedef struct{
 	int indirect;
 	int location;
 }FILE_INODE;
+
+int ReadFile(int blockId);
 // get block file path
 // : fusedata.*
 void BlockPathWithIndex(int n, char* path){
@@ -137,13 +139,26 @@ void PrintInode(INODE* toPrint){
 }
 // Load basic inode info from buffer
 int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer){
-	int Count = sscanf(buffer,
-		"{size: %lu, uid: %d, gid:%d, mode:%d, atime:%ld, ctime:%ld, mtime:%ld",
-		&toSet->size, &toSet->uid, &toSet->gid, &toSet->mode, &toSet->timeInfo.atime, &toSet->timeInfo.ctime, &toSet->timeInfo.mtime
-		);
-	if(Count != 7){
-		printf("%s\n", "Load Inode Basic Info Failed\n");
-		return -1;
+	if(toSet->type == directory){
+		int Count = sscanf(buffer,
+			"{size: %lu, uid: %d, gid:%d, mode:%d, atime:%ld, ctime:%ld, mtime:%ld, linkcount:%d",
+			&toSet->size, &toSet->uid, &toSet->gid, &toSet->mode, &toSet->timeInfo.atime, &toSet->timeInfo.ctime, &toSet->timeInfo.mtime,
+			 &toSet->linkCount);
+		if(Count != 8){
+			printf("%s\n", "Load Inode Basic Info Failed\n");
+			return -1;
+		}
+	}
+	if(toSet->type == file){
+		int Count = sscanf(buffer,
+			"{size: %lu, uid: %d, gid:%d, mode:%d, linkcount:%d, atime:%ld, ctime:%ld, mtime:%ld",
+			&toSet->size, &toSet->uid, &toSet->gid, &toSet->mode, &toSet->linkCount, &toSet->timeInfo.atime, &toSet->timeInfo.ctime, 
+			&toSet->timeInfo.mtime
+			);
+		if(Count != 8){
+			printf("%s\n", "Load Inode Basic Info Failed\n");
+			return -1;
+		}
 	}
 	//PrintInode(toSet);
 	return 0;
@@ -176,22 +191,22 @@ int setLinkEntry(FS_ENTRY *entry, char *buffer, int entryNum){
 // Load link entries for DIR_INODE
 // linkcount:4, filename_to_inode_dict:  {f:foo:1234 ...
 int LoadLinkEntry(DIR_INODE *dInode, char* buffer){
-	char *linkStart, *entryStart;
-	int tempLinkCount, setCount1;
+	char *entryStart;
 	// make sure "linkCount" && "filename_to_inode_dict"
 	// are correctly existed in the inode
-	if(!(linkStart = strstr(buffer, "linkcount")) || !(entryStart = strstr(buffer, "filename_to_inode_dict"))){
+	if(!(entryStart = strstr(buffer, "filename_to_inode_dict"))){
 		printf("%s\n", "Invalid Dir Inode format: can not load links");
 		return -1;
 	}
-	setCount1 = sscanf(linkStart, "linkcount:%d", &tempLinkCount);	// get the link count
-	dInode->linkCount = tempLinkCount;
-	if(setCount1 != 1){	printf("%s\n", "Set linkCount Failed"); return -2;}
-	printf("linkCount:%d\n", tempLinkCount);
+	//setCount1 = sscanf(linkStart, "linkcount:%d", &tempLinkCount);	// get the link count
+	//dInode->linkCount = tempLinkCount;
+	//if(setCount1 != 1){	printf("%s\n", "Set linkCount Failed"); return -2;}
+	printf("linkCount:%d\n", dInode->inode_basic.linkCount);
+
 	// alllocate space for dirRootEntry
-	dInode->dirRootEntry = (FS_ENTRY*) malloc(tempLinkCount*sizeof(FS_ENTRY));
+	dInode->dirRootEntry = (FS_ENTRY*) malloc(dInode->inode_basic.linkCount*sizeof(FS_ENTRY));
 	entryStart += sizeof("filename_to_inode_dict: {") - 1; 	// move the start of the buffer after '{'
-	setLinkEntry(dInode->dirRootEntry, entryStart, tempLinkCount);
+	setLinkEntry(dInode->dirRootEntry, entryStart, dInode->inode_basic.linkCount);
 	/*
 	for(i=0; i<tempLinkCount; i++){
 		setCount2 = sscanf(entryStart, "%c:%s:%d", &entryType, entryFileName, &entryInodeNumber);
@@ -211,13 +226,38 @@ int LoadLinkEntry(DIR_INODE *dInode, char* buffer){
 	return 0;
 }
 
+// Load file entry
+// indirect: 0/1 location:xxxx
+int LoadFileEntry(FILE_INODE *fInode, char *buffer){
+	char *indirectTok, *locationTok;
+	indirectTok = strstr(buffer, "indirect:");
+	indirectTok += strlen("indirect:");
+	sscanf(indirectTok, "%d", &fInode->indirect);
+	locationTok = strstr(buffer, "location:");
+	locationTok += strlen("location:");
+	sscanf(locationTok, "%d", &fInode->location);
+	printf("indirect:%d location:%d\n", fInode->indirect, fInode->location);
+	return 0;
+}
+
 // Read directory INODE
 int ReadDir(int blockId){
 	char buffer[BLOCK_SIZE];
 	DIR_INODE *dInode = (DIR_INODE*)malloc(sizeof(DIR_INODE));
+	dInode->inode_basic.type = directory;
 	ReadNthBlock(blockId, buffer);
 	LoadInodeInfoFromBuffer(&dInode->inode_basic, buffer);	// load basic info to Inode
 	LoadLinkEntry(dInode, buffer);	// load link entries into Inode
+	// Check whether has '.' && '..' directory
+	for(int i=0; i<dInode->inode_basic.linkCount; i++){
+		if(dInode->dirRootEntry[i].type == 'f'){
+			ReadFile(dInode->dirRootEntry[i].inodeNumber);
+		}
+		if(dInode->dirRootEntry[i].type == 'd' && strcmp(dInode->dirRootEntry[i].fileName,"..") && strcmp(dInode->dirRootEntry[i].fileName,".")){
+			printf("dir_block_id:%d entryIndex:%d\n", blockId, i);
+			ReadDir(dInode->dirRootEntry[i].inodeNumber);
+		}
+	}
 	// free the DIR_INODE
 	if(dInode->dirRootEntry)	free(dInode->dirRootEntry);
 	free(dInode);
@@ -229,8 +269,13 @@ int ReadDir(int blockId){
 int ReadFile(int blockId){
 	char buffer[BLOCK_SIZE];
 	FILE_INODE *fInode = (FILE_INODE*)malloc(sizeof(FILE_INODE));
+	fInode->inode_basic.type= file;
 	ReadNthBlock(blockId, buffer);
-	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load 
+	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load basic info to Inode
+	LoadFileEntry(fInode, buffer);
+
+	free(fInode);
+	return 0;
 }
 int main(){
 	FS *fs = (FS*)malloc(sizeof(FS));
