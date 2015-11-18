@@ -2,6 +2,9 @@
 // Assignment 2 for OS
 // Author: Weichen Xu, wx431@nyu.edu
 // Date: 11/16/2015
+//
+// Key: no '\0' at the end of block
+// 
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -16,9 +19,14 @@
 #define MAX_FILE_NAME_LENGTH 50
 #define BLOCK_SIZE 4096
 #define MAX_INDIRECT_BLOCK_NUM 400
+// whether time is in the future
 #define INVALID_TIME(t) t > (time_t)time(NULL) 
+// two types of inodes in fs
+// directory
+// file
 enum fs_types {directory, file};
 typedef enum fs_types FILE_TYPE;
+
 // fs_time_wcx
 // time sturct for fs system
 // atime: access time
@@ -56,15 +64,17 @@ typedef struct inode_wcx INODE;
 // Define dic_inode and file_inode inherited from inode
 typedef struct
 {
+	char dirName[MAX_FILE_NAME_LENGTH];
+	int inodeNumber;
 	INODE inode_basic;
 	FS_ENTRY *dirRootEntry;
 }DIR_INODE;
 typedef struct{
+	char fileName[MAX_FILE_NAME_LENGTH];
+	int inodeNumer;
 	INODE inode_basic;
-	int indirect;
-	int location;
-	int indirectBlockLength;
-	int *blockPointers;
+	int indirect,location;
+	int locationArrayLength,*locationArray;
 }FILE_INODE;
 
 // fs_wcx
@@ -82,22 +92,26 @@ typedef struct fs_wcx FS;
 
 int ReadFile(int blockId);
 int CheckDir(DIR_INODE *dInode);
-
+int ReadNthBlock(int n, char* buffer);
 // Load the indirect location data
 // return number of CSV vector, like: 1, 3, *** 6, 5
 // return 0, means this is not indirect location block
-int LoadIndirectLocation(char *buffer, FILE_INODE *fInode){
+int LoadIndirectLocation(FILE_INODE *fInode){
 	int indirectCount = 0, *blockPointers = (int *)malloc(sizeof(int)*MAX_INDIRECT_BLOCK_NUM);
 	// malloc faild
-	char *tok;
+	char *tok, buffer[BLOCK_SIZE];
+	ReadNthBlock(fInode->location,buffer);
 	const char comma[2] = ", ";
 	tok = strtok(buffer, comma);
 	while(tok != NULL){
-		indirectCount += sscanf(tok, "%d", blockPointers[indirectCount]);
+		printf("tok is: %s\n", tok);
+		indirectCount += sscanf(tok, "%d", &blockPointers[indirectCount]);
+		printf("block is: %d\n", blockPointers[indirectCount-1]);
 		tok = strtok(NULL, comma);
 	}
-	fInode->indirectBlockLength = indirectCount;
-	fInode->blockPointers = realloc(blockPointers, sizeof(int)*indirectCount);
+	
+	fInode->locationArrayLength = indirectCount;
+	fInode->locationArray = realloc(blockPointers, sizeof(int)*indirectCount);
 	// if realloc failed
 	return indirectCount;
 }
@@ -113,7 +127,7 @@ void BlockPathWithIndex(int n, char* path){
 	// return the char* "*data.*"
 }
 
-// read n th block into buffer
+// read n th block/file into buffer
 // load the 4096 bytes of block into buffer
 int ReadNthBlock(int n, char* buffer){
 	char ch;
@@ -123,14 +137,29 @@ int ReadNthBlock(int n, char* buffer){
 	BlockPathWithIndex(n, blockPath);	// get block file path
 	p = fopen(blockPath, "r");
 	if(p == NULL){	// whether file is opened
-		printf("%s %s\n", "Unable to open the file: ", blockPath);
+		printf("%s %s\n", "Unable to open the file/block for read: ", blockPath);
 		return -1;
 	}
 	while( (ch = fgetc(p)) != EOF) {
     	buffer[count] = ch;
     	count++;
  	}
- 	buffer[count] = '\0';	// set '\0' to end of buffer
+ 	if(count < BLOCK_SIZE)	buffer[count] = '\0';	// set '\0' to end of buffer
+	fclose(p);
+	return 0;
+}
+// wirte n th buffer into block/file
+// wirte strlen buffer into the file
+int WriteNthBlock(int n, char* buffer){
+	char blockPath[MAX_BLOCK_PATH_LENGTH];
+	FILE *p;
+	BlockPathWithIndex(88, blockPath);	// get block file path
+	p = fopen(blockPath, "w");
+	if(p == NULL){	// whether file is opened
+		printf("%s %s\n", "Unable to open the file/block for write: ", blockPath);
+		return -1;
+	}
+	fwrite(buffer, sizeof(char), BLOCK_SIZE, p);
 	fclose(p);
 	return 0;
 }
@@ -202,7 +231,7 @@ int setLinkEntry(FS_ENTRY *entry, char *buffer, int entryNum){
 	int count = 0;
 	tok = strtok(buffer, &comma);
 	while(tok != NULL){
-		printf("tok is: %s\n", tok);
+		//printf("tok is: %s\n", tok);
 		entryType = *(tok+strlen(tok)-1);
 		//printf("Entry type: %c\n", entryType);
 		if(entryType == 'f'){
@@ -349,18 +378,26 @@ int CheckDir(DIR_INODE *dInode){
 }
 
 
-// check file
+// check file 
 // time is valid
-// location is vector or not
-// check size
+// size is valid
+// if indirect = 0, size < BLOCK_SIZE
+// else	BLOCK_SIZE*(LENGTH-1) < size < BLOCK_SIZE*(LENGTH)
 int CheckFile(FILE_INODE *fInode){
 	int valid;
-	char buffer[BLOCK_SIZE];
 	if((valid = CheckTime(fInode->inode_basic.timeInfo))){
 		return -1;
 	}
-	ReadNthBlock(fInode->location, buffer);
-
+	if(fInode->locationArrayLength && !fInode->indirect){
+		printf("Indirect should be 1\n");
+	}
+	if( (size_t)(fInode->locationArrayLength-1)*BLOCK_SIZE < fInode->inode_basic.size && 
+		(size_t)(fInode->locationArrayLength)*BLOCK_SIZE > fInode->inode_basic.size){
+		printf("Size is OK\n");
+	}
+	else{
+		printf("Invalid size:%lu in file: \n", fInode->inode_basic.size);
+	}
 	return 0;
 }
 
@@ -373,9 +410,9 @@ int ReadFile(int blockId){
 	ReadNthBlock(blockId, buffer);
 	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load basic info to Inode
 	LoadFileEntry(fInode, buffer);
-
+	LoadIndirectLocation(fInode);
 	CheckFile(fInode);
-
+	if(fInode->locationArray)	free(fInode->locationArray);
 	free(fInode);
 	return 0;
 }
@@ -383,7 +420,7 @@ int main(){
 	int valid;
 	FS *fs = (FS*)malloc(sizeof(FS));
 	if((valid = LoadFS(fs))){	// load super block and check
-		printf("Super block invalid\n");
+		printf("FATAL ERROR, this may not be FUSE file system\n");
 		return 0;
 	}
 	if((valid = ReadDir(fs->root))){	// load root dir and check
