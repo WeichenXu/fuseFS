@@ -32,46 +32,44 @@ typedef enum fs_types FILE_TYPE;
 // atime: access time
 // ctime: creation time
 // mtime: modification time
-struct fs_time_wcx
+typedef struct fs_time_wcx
 {
 	time_t atime;
 	time_t ctime;
 	time_t mtime;
-};
-typedef struct fs_time_wcx FS_TIME;
+}FS_TIME;
 
 // fs_entry
 // entry inside directory inode
-struct fs_entry_wcx
+typedef struct fs_entry_wcx
 {
 	FILE_TYPE type;
 	char fileName[MAX_FILE_NAME_LENGTH];
 	int inodeNumber;
-};
-typedef struct fs_entry_wcx FS_ENTRY;
+}FS_ENTRY;
 
 // Inode
 // Basic inode info struct for both file & directory
-struct inode_wcx
+typedef struct inode_wcx
 {
 	FILE_TYPE type;
 	size_t size;
 	int uid, gid, mode;
 	int linkCount;
 	FS_TIME timeInfo;
-};
-typedef struct inode_wcx INODE;
+}INODE;
 // Define dic_inode and file_inode inherited from inode
 typedef struct
 {
 	char dirName[MAX_FILE_NAME_LENGTH];
-	int inodeNumber;
+	int inodeNumber, parent_inodeNumber;
 	INODE inode_basic;
 	FS_ENTRY *dirRootEntry;
 }DIR_INODE;
+
 typedef struct{
 	char fileName[MAX_FILE_NAME_LENGTH];
-	int inodeNumer;
+	int inodeNumber;
 	INODE inode_basic;
 	int indirect,location;
 	int locationArrayLength,*locationArray;
@@ -79,7 +77,7 @@ typedef struct{
 
 // fs_wcx
 // fs struct
-struct fs_wcx
+typedef struct fs_wcx
 {
 	size_t creationTime;
 	int mounted;
@@ -87,31 +85,32 @@ struct fs_wcx
 	int freeStart, freeEnd, root;
 	int maxBlocks;
 	//DIR_INODE *rootDir;
-};
-typedef struct fs_wcx FS;
+}FS;
 
-int ReadFile(int blockId);
+int ReadFile(FILE_INODE *fInode);
 int CheckDir(DIR_INODE *dInode);
 int ReadNthBlock(int n, char* buffer);
+
 // Load the indirect location data
-// return number of CSV vector, like: 1, 3, *** 6, 5
+// number of CSV vector, like: 1, 3, *** 6, 5
 // return 0, means this is not indirect location block
-int LoadIndirectLocation(FILE_INODE *fInode){
-	int indirectCount = 0, *blockPointers = (int *)malloc(sizeof(int)*MAX_INDIRECT_BLOCK_NUM);
-	// malloc faild
+int LoadBlockArray(int blockId, int *blockArray){
+	int indirectCount = 0;
 	char *tok, buffer[BLOCK_SIZE];
-	ReadNthBlock(fInode->location,buffer);
+	ReadNthBlock(blockId,buffer);
+	blockArray = (int *)realloc(blockArray, sizeof(int)*MAX_INDIRECT_BLOCK_NUM);
+	// incase realloc failed
 	const char comma[2] = ", ";
 	tok = strtok(buffer, comma);
 	while(tok != NULL){
-		printf("tok is: %s\n", tok);
-		indirectCount += sscanf(tok, "%d", &blockPointers[indirectCount]);
-		printf("block is: %d\n", blockPointers[indirectCount-1]);
+		//printf("tok is: %s\n", tok);
+		indirectCount += sscanf(tok, "%d", &blockArray[indirectCount]);
+		//printf("block is: %d\n", blockArray[indirectCount-1]);
 		tok = strtok(NULL, comma);
 	}
-	
-	fInode->locationArrayLength = indirectCount;
-	fInode->locationArray = realloc(blockPointers, sizeof(int)*indirectCount);
+	blockArray = realloc(blockArray, sizeof(int)*indirectCount);
+	//fInode->locationArrayLength = indirectCount;
+	//fInode->locationArray = realloc(blockPointers, sizeof(int)*indirectCount);
 	// if realloc failed
 	return indirectCount;
 }
@@ -176,7 +175,7 @@ int LoadFS(FS *fs){
 		&fs->creationTime, &fs->mounted, &fs->devId, &fs->freeStart, &fs->freeEnd, &fs->root, &fs->maxBlocks
 		);
 	if(Count != 7){
-		printf("%s\n", "Load Super Block Failed\n");
+		printf("%s\n", "Invalid Super Block Format\n");
 		return -3;
 	}
 	// check whether the fs DevId is valid
@@ -191,6 +190,11 @@ int LoadFS(FS *fs){
 	}
 	return 0;
 }
+// Load free block list into the fs
+// The free list starts from nth, to mth, all in CSV format
+
+
+
 // Print Inode Basic info for debug
 void PrintInode(INODE* toPrint){
 	printf("%lu %d %ld\n", toPrint->size, toPrint->uid, toPrint->timeInfo.atime);
@@ -218,7 +222,7 @@ int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer){
 			return -1;
 		}
 	}
-	PrintInode(toSet);
+	//PrintInode(toSet);
 	return 0;
 }
 
@@ -273,7 +277,6 @@ int LoadLinkEntry(DIR_INODE *dInode, char* buffer){
 	//setCount1 = sscanf(linkStart, "linkcount:%d", &tempLinkCount);	// get the link count
 	//dInode->linkCount = tempLinkCount;
 	//if(setCount1 != 1){	printf("%s\n", "Set linkCount Failed"); return -2;}
-	printf("linkCount:%d\n", dInode->inode_basic.linkCount);
 
 	// alllocate space for dirRootEntry
 	dInode->dirRootEntry = (FS_ENTRY*) malloc(dInode->inode_basic.linkCount*sizeof(FS_ENTRY));
@@ -292,26 +295,24 @@ int LoadFileEntry(FILE_INODE *fInode, char *buffer){
 	locationTok = strstr(buffer, "location:");
 	locationTok += strlen("location:");
 	sscanf(locationTok, "%d", &fInode->location);
-	printf("indirect:%d location:%d\n", fInode->indirect, fInode->location);
+	//printf("indirect:%d location:%d\n", fInode->indirect, fInode->location);
 	return 0;
 }
 
 // Read directory INODE
-int ReadDir(int blockId){
+int ReadDir(DIR_INODE *dInode){
 	int valid;
-	printf("Read Dir block num:%d\n", blockId);
 	char buffer[BLOCK_SIZE];
-	DIR_INODE *dInode = (DIR_INODE*)malloc(sizeof(DIR_INODE));
 	dInode->inode_basic.type = directory;
-	ReadNthBlock(blockId, buffer);
+	ReadNthBlock(dInode->inodeNumber, buffer);
 	LoadInodeInfoFromBuffer(&dInode->inode_basic, buffer);	// load basic info to Inode
 	LoadLinkEntry(dInode, buffer);	// load link entries into Inode
 	if((valid = CheckDir(dInode))){
 		return -1;
 	}
 	// free the DIR_INODE
-	if(dInode->dirRootEntry)	free(dInode->dirRootEntry);
-	free(dInode);
+	//if(dInode->dirRootEntry)	free(dInode->dirRootEntry);
+	//free(dInode);
 	
 	return 0;
 }
@@ -325,54 +326,71 @@ int ReadDir(int blockId){
 // check whether time are in the future
  int CheckTime(FS_TIME t){
  	if(INVALID_TIME(t.atime)){
- 		printf("Invalid atime\n");
+ 		printf("Invalid atime: %ld\n", t.atime);
  		return -1;
  	}
  	if(INVALID_TIME(t.mtime)){
- 		printf("Invalid mtime\n");
- 		printf("%ld\n", t.mtime);
+ 		printf("Invalid mtime: %ld\n", t.mtime);
  		return -2;
  	}
  	if(INVALID_TIME(t.ctime)){
- 		printf("Invalid ctime\n");
+ 		printf("Invalid ctime: %ld\n", t.ctime);
  		return -3;
  	}
  	return 0;
  }
  // linkcount has been checked when readDir
  // check whether the dir has '.' && '..'
-int CheckDir(DIR_INODE *dInode){
-	//printf("start check Dir\n");
-	//printf("Check Dir entry: %s\n", dInode->dirRootEntry[0].fileName);
+int CheckDir(DIR_INODE *dInode){	
 	int currentDirExist = 0, parentDirExist = 0;
 	for(int i=0; i<dInode->inode_basic.linkCount; i++){
-		printf("InodeIndex: %d, Inode_type:%d, Inode_fileName:%s\n", i, dInode->dirRootEntry[i].type, dInode->dirRootEntry[i].fileName);
+		//printf("InodeIndex: %d, Inode_type:%d, Inode_fileName:%s\n", i, dInode->dirRootEntry[i].type, dInode->dirRootEntry[i].fileName);
 		if(dInode->dirRootEntry[i].type == file){
-			ReadFile(dInode->dirRootEntry[i].inodeNumber);	//  load and check the file
+			FILE_INODE *fInode = (FILE_INODE*)malloc(sizeof(FILE_INODE));
+			fInode->inodeNumber = dInode->dirRootEntry[i].inodeNumber;
+			strncpy(fInode->fileName, dInode->dirRootEntry[i].fileName, strlen(dInode->dirRootEntry[i].fileName));
+			ReadFile(fInode);	//  load and check the file
+			if(fInode->locationArray)	free(fInode->locationArray);
+			free(fInode);
 		}
 		if(dInode->dirRootEntry[i].type == directory){
 			if(!strcmp(dInode->dirRootEntry[i].fileName,"..")){
-				parentDirExist = 1;
+				parentDirExist = dInode->dirRootEntry[i].inodeNumber;
 				continue;
 			}
 			if(!strcmp(dInode->dirRootEntry[i].fileName,".")){
-				currentDirExist = 1;
+				currentDirExist = dInode->dirRootEntry[i].inodeNumber;
 				continue;
 			}
-			ReadDir(dInode->dirRootEntry[i].inodeNumber);
+			// Recursively read and check child dir 
+			// Set current dir inode number and parent dir inode number for check
+			DIR_INODE *childDirInode = (DIR_INODE*)malloc(sizeof(DIR_INODE));
+			childDirInode->inodeNumber = dInode->dirRootEntry[i].inodeNumber;
+			childDirInode->parent_inodeNumber = dInode->inodeNumber;
+			strncpy(childDirInode->dirName, dInode->dirRootEntry[i].fileName, strlen(dInode->dirRootEntry[i].fileName));
+			ReadDir(childDirInode);
+			if(childDirInode->dirRootEntry)	free(childDirInode->dirRootEntry);
+			free(childDirInode);
 		}
 	}
-	
-	if(!currentDirExist){
-		printf("Current Dir miss!\n");
-		return -1;
+	printf("--------------------------------------\n");
+	printf("Directory name: %s   Checking...\n", dInode->dirName);
+	if(currentDirExist){
+		if(currentDirExist != dInode->inodeNumber)	printf("ERROR!!!!! Current Directory block number: %d should be %d\n", currentDirExist, dInode->inodeNumber);
+		else printf("Current Directory block number: %d is correct\n", currentDirExist);
 	}
-	if(!currentDirExist){
-		printf("Parent Dir miss!\n");
-		return -2;
+	else{
+		printf("Current Dir miss!\n");
+	}
+	if(parentDirExist){
+		if(parentDirExist != dInode->parent_inodeNumber)	printf("ERROR!!!!! Parent Directory block number: %d should be %d\n", parentDirExist, dInode->parent_inodeNumber);
+		else printf("Parent Directory block number: %d is correct\n", parentDirExist);
+	}
+	else{
+		printf("Parent Dir miss\n");
 	}
 	if(CheckTime(dInode->inode_basic.timeInfo)){
-		return -3;
+		//printf("")
 	}
 	return 0;
 }
@@ -384,48 +402,69 @@ int CheckDir(DIR_INODE *dInode){
 // if indirect = 0, size < BLOCK_SIZE
 // else	BLOCK_SIZE*(LENGTH-1) < size < BLOCK_SIZE*(LENGTH)
 int CheckFile(FILE_INODE *fInode){
-	int valid;
+	printf("--------------------------------------\n");
+	printf("File name: %s   Checking...\n", fInode->fileName);
+	int valid, fileSize = (int)fInode->inode_basic.size, length = fInode->locationArrayLength;
 	if((valid = CheckTime(fInode->inode_basic.timeInfo))){
 		return -1;
 	}
 	if(fInode->locationArrayLength && !fInode->indirect){
-		printf("Indirect should be 1\n");
+		printf("ERROE!!!!!Data Block is in CSV Format, Indirect should be 1\n");
 	}
-	if( (size_t)(fInode->locationArrayLength-1)*BLOCK_SIZE < fInode->inode_basic.size && 
-		(size_t)(fInode->locationArrayLength)*BLOCK_SIZE > fInode->inode_basic.size){
-		printf("Size is OK\n");
+	if(!fInode->indirect && (fileSize > BLOCK_SIZE || fileSize < 0)){
+		printf("ERROE!!!!!File Size: %d should range from 0 to BLOCK_SIZE\n", fileSize);	return -1;
 	}
-	else{
-		printf("Invalid size:%lu in file: \n", fInode->inode_basic.size);
+	if(fInode->indirect){
+		if(fileSize >= length*BLOCK_SIZE){
+			printf("ERROE!!!!!File Size: %d exceeds locationArraySize: %d*BLOCK_SIZE\n", fileSize, length);	return -2;
+		}
+		if(fileSize < (length-1)*BLOCK_SIZE){
+			printf("ERROE!!!!!File Size: %d too small for locationArraySize: %d*BLOCK_SIZE\n", fileSize, length);	return -2;
+		}
 	}
+	printf("File size: %d is valid with indirect: %d ",fileSize, fInode->indirect);
+	if(fInode->indirect)	printf("with location array length: %d\n", length);
+	else	printf("\n");
 	return 0;
 }
 
 // Read file INODE
-int ReadFile(int blockId){
-	printf("Read file block Id: %d\n", blockId);
+int ReadFile(FILE_INODE *fInode){
+	//printf("Read file block Id: %d\n", blockId);
 	char buffer[BLOCK_SIZE];
-	FILE_INODE *fInode = (FILE_INODE*)malloc(sizeof(FILE_INODE));
 	fInode->inode_basic.type= file;
-	ReadNthBlock(blockId, buffer);
+	ReadNthBlock(fInode->inodeNumber, buffer);
 	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load basic info to Inode
 	LoadFileEntry(fInode, buffer);
-	LoadIndirectLocation(fInode);
+	fInode->locationArrayLength = LoadBlockArray(fInode->location, fInode->locationArray);
 	CheckFile(fInode);
-	if(fInode->locationArray)	free(fInode->locationArray);
-	free(fInode);
+	
 	return 0;
 }
 int main(){
 	int valid;
 	FS *fs = (FS*)malloc(sizeof(FS));
+	DIR_INODE *rootDir = (DIR_INODE*)malloc(sizeof(DIR_INODE));
+
 	if((valid = LoadFS(fs))){	// load super block and check
 		printf("FATAL ERROR, this may not be FUSE file system\n");
 		return 0;
 	}
-	if((valid = ReadDir(fs->root))){	// load root dir and check
+	rootDir->inodeNumber = fs->root;
+	rootDir->parent_inodeNumber = fs->freeEnd;
+	strncpy(rootDir->dirName, "root", 5);
+	// root directory parent dir block number is itself
+	// use recursio to check directory and files
+	
+	if((valid = ReadDir(rootDir))){	// load root dir and check
 		printf("Read root dir failed\n");
 		return 0;
 	}
+	
+	// check free block list
+
+	// free fs & root dir
+	if(rootDir->dirRootEntry)	free(rootDir->dirRootEntry);
+	free (rootDir);
 	free(fs);
 }
