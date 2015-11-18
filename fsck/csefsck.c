@@ -15,6 +15,7 @@
 #define MAX_BLOCK_NUM_LENGTH 10
 #define MAX_FILE_NAME_LENGTH 50
 #define BLOCK_SIZE 4096
+#define MAX_INDIRECT_BLOCK_NUM 400
 #define INVALID_TIME(t) t > (time_t)time(NULL) 
 enum fs_types {directory, file};
 typedef enum fs_types FILE_TYPE;
@@ -35,7 +36,7 @@ typedef struct fs_time_wcx FS_TIME;
 // entry inside directory inode
 struct fs_entry_wcx
 {
-	char type;
+	FILE_TYPE type;
 	char fileName[MAX_FILE_NAME_LENGTH];
 	int inodeNumber;
 };
@@ -62,6 +63,8 @@ typedef struct{
 	INODE inode_basic;
 	int indirect;
 	int location;
+	int indirectBlockLength;
+	int *blockPointers;
 }FILE_INODE;
 
 // fs_wcx
@@ -79,6 +82,26 @@ typedef struct fs_wcx FS;
 
 int ReadFile(int blockId);
 int CheckDir(DIR_INODE *dInode);
+
+// Load the indirect location data
+// return number of CSV vector, like: 1, 3, *** 6, 5
+// return 0, means this is not indirect location block
+int LoadIndirectLocation(char *buffer, FILE_INODE *fInode){
+	int indirectCount = 0, *blockPointers = (int *)malloc(sizeof(int)*MAX_INDIRECT_BLOCK_NUM);
+	// malloc faild
+	char *tok;
+	const char comma[2] = ", ";
+	tok = strtok(buffer, comma);
+	while(tok != NULL){
+		indirectCount += sscanf(tok, "%d", blockPointers[indirectCount]);
+		tok = strtok(NULL, comma);
+	}
+	fInode->indirectBlockLength = indirectCount;
+	fInode->blockPointers = realloc(blockPointers, sizeof(int)*indirectCount);
+	// if realloc failed
+	return indirectCount;
+}
+
 // get block file path
 // : fusedata.*
 void BlockPathWithIndex(int n, char* path){
@@ -166,26 +189,35 @@ int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer){
 			return -1;
 		}
 	}
-	//PrintInode(toSet);
+	PrintInode(toSet);
 	return 0;
 }
 
 // set link entry
 // f:name.txt:122
 int setLinkEntry(FS_ENTRY *entry, char *buffer, int entryNum){
-	char *tok;
-	const char comma[1] = ":";
-	const char semi[2] = ",}";
+	char *tok, entryType;
+	const char comma = ':';
+	const char semi[2] = ",";
 	int count = 0;
-	tok = strtok(buffer, comma);
+	tok = strtok(buffer, &comma);
 	while(tok != NULL){
-		entry[count].type = *(tok+strlen(tok)-1);
-		tok = strtok(NULL, comma);
+		printf("tok is: %s\n", tok);
+		entryType = *(tok+strlen(tok)-1);
+		//printf("Entry type: %c\n", entryType);
+		if(entryType == 'f'){
+			entry[count].type = file;
+		}
+		if(entryType == 'd'){
+			entry[count].type = directory;
+		}
+		//entry[count].type = *(tok+strlen(tok)-1);
+		tok = strtok(NULL, &comma);
 		sscanf(tok, "%s", entry[count].fileName);
 		tok = strtok(NULL, semi);
 		sscanf(tok, "%d",&entry[count].inodeNumber);
-		tok = strtok(NULL, comma);
-		printf("%c %s %d\n", entry[count].type, entry[count].fileName, entry[count].inodeNumber);
+		tok = strtok(NULL, &comma);
+		//printf("%c %s %d\n", entry[count].type, entry[count].fileName, entry[count].inodeNumber);
 		count++;
 		if(count > entryNum){
 			printf("%s\n", "Entry number exceeds the number in the inode");
@@ -238,7 +270,7 @@ int LoadFileEntry(FILE_INODE *fInode, char *buffer){
 // Read directory INODE
 int ReadDir(int blockId){
 	int valid;
-	printf("Read Dir block num:%d", blockId);
+	printf("Read Dir block num:%d\n", blockId);
 	char buffer[BLOCK_SIZE];
 	DIR_INODE *dInode = (DIR_INODE*)malloc(sizeof(DIR_INODE));
 	dInode->inode_basic.type = directory;
@@ -281,12 +313,15 @@ int ReadDir(int blockId){
  // linkcount has been checked when readDir
  // check whether the dir has '.' && '..'
 int CheckDir(DIR_INODE *dInode){
+	//printf("start check Dir\n");
+	//printf("Check Dir entry: %s\n", dInode->dirRootEntry[0].fileName);
 	int currentDirExist = 0, parentDirExist = 0;
 	for(int i=0; i<dInode->inode_basic.linkCount; i++){
-		if(dInode->dirRootEntry[i].type == 'f'){
+		printf("InodeIndex: %d, Inode_type:%d, Inode_fileName:%s\n", i, dInode->dirRootEntry[i].type, dInode->dirRootEntry[i].fileName);
+		if(dInode->dirRootEntry[i].type == file){
 			ReadFile(dInode->dirRootEntry[i].inodeNumber);	//  load and check the file
 		}
-		if(dInode->dirRootEntry[i].type == 'd'){
+		if(dInode->dirRootEntry[i].type == directory){
 			if(!strcmp(dInode->dirRootEntry[i].fileName,"..")){
 				parentDirExist = 1;
 				continue;
@@ -325,6 +360,7 @@ int CheckFile(FILE_INODE *fInode){
 		return -1;
 	}
 	ReadNthBlock(fInode->location, buffer);
+
 	return 0;
 }
 
@@ -337,7 +373,9 @@ int ReadFile(int blockId){
 	ReadNthBlock(blockId, buffer);
 	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load basic info to Inode
 	LoadFileEntry(fInode, buffer);
-	// check the 
+
+	CheckFile(fInode);
+
 	free(fInode);
 	return 0;
 }

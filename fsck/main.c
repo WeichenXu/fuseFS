@@ -7,25 +7,49 @@ typedef struct {
 	int b;
 }two;
 int main(){
+	char buffer[100] = "f:hello.txt:27, d:.:26, d:..:25, d:test:30}}";
+	char *tok;
+	const char comma = ':';
+	const char semi[2] = ",";
+	int count = 0;
+	tok = strtok(buffer, &comma);
+	while(tok != NULL){
+		printf("tok is: %s\n", tok);
+		printf("Entry type: %c\n", *(tok+strlen(tok)-1));
+		/*
+		if(*(tok+strlen(tok)-1) == 'f'){
+			entry[count].type = file;
+		}
+		if(*(tok+strlen(tok)-1) == 'd'){
+			entry[count].type = directory;
+		}
+		*/
+		//entry[count].type = *(tok+strlen(tok)-1);
+		tok = strtok(NULL, &comma);
+		printf("tok is: %s\n", tok);
+		tok = strtok(NULL, semi);
+		printf("tok is: %s\n", tok);
+		tok = strtok(NULL, &comma);
+		//printf("%c %s %d\n", entry[count].type, entry[count].fileName, entry[count].inodeNumber);
+		
+	}
+	return 0;
+	/*
 	two *test = (two*) malloc(sizeof(two) * 5);
 	test[1].a = 5;
 	printf("%d\n", test[1].a);
 	free(test);
+	*/
 	/*
-	char src[100] = "f:hello.txt:27, d:.:26, d:..:27}";
-	char dst[20],c, *tok1;
-	const char comma[1] = ":";
-	const char semi[2] = ",}";
-	int num, count = 0;
+	char src[100] = "1, 2, 3, 4";
+	char *tok1;
+	const char comma[2] = ", ";
+	int count = 0, num;
 	tok1 = strtok(src, comma);
 	while(tok1 != NULL){
-		c = *(tok1+strlen(tok1)-1);
+		sscanf(tok1, "%d", &num);
+		printf("Number %d id is %s\n", count, tok1);
 		tok1 = strtok(NULL, comma);
-		sscanf(tok1, "%s", dst);
-		tok1 = strtok(NULL, semi);
-		sscanf(tok1, "%d",&num);
-		tok1 = strtok(NULL, comma);
-		printf("%c %s %d\n", c, dst, num);
 	}
 	*/
 	/*
