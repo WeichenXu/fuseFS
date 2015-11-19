@@ -2,6 +2,7 @@
 #include "time.h"
 #include "string.h"
 #include "stdlib.h"
+#include "stdbool.h"
 #define MAX_BLOCK_PATH_LENGTH 20
 #define MAX_BLOCK_NUM_LENGTH 10
 #define BLOCK_FILE_NAME "./fusedata."
@@ -19,8 +20,60 @@ void BlockPathWithIndex(int n, char* path){
 	strncat(path, blockNum, strlen(blockNum));
 	// return the char* "*data.*"
 }
+void resize( int **p, int size ) {
+   free( *p );
+   *p = (int*) malloc( size * sizeof(int) );
+   (*p)[0] = 1;
+   printf("%d\n",*p[2]);
+}
 
+
+void test(int **a){
+	//printf("%d\n",a);
+	//if(*a) free(*a);
+	*a = (int *)malloc(sizeof(int)*2);
+	(*a)[1] = 1;
+	(*a)[0] = 2;
+	//*a = (int *)realloc(a, sizeof(two)*2);
+	printf("%d\n",(*a)[1]);
+	//return a;
+}
+int main() {
+   int *p = NULL;//(int*) malloc( 10 * sizeof(int) );
+   test( &p );
+   printf("%d\n", p[0]);
+   if(p) free(p);
+   //return 0;
+}
+/*
 int main(){
+	int *a = NULL;
+	resize(&a,3);
+	printf("%d\n",a[1]);
+	free(a);
+
+	return 0;
+}
+*/
+	/*
+	bool array[100] = {false};
+	for(int i=0; i<5; i++){
+		if(array[i] == false)	printf("it is false in %d\n", i);
+	}
+	*/
+	/*
+	two* a = NULL, *b;
+	for(int i=0; i<5; i++){
+		a = realloc(a, sizeof(two)*(i+1));
+		a[i].a = 1;
+		a[i].b = 2;
+	}
+	b = a;
+	for(int j=0; j<5; j++){
+		printf("b[%d] is %d %d\n", j, b[j].a, b[j].b);
+	}
+	*/
+	/*
 	char buffer[100] = "f:hello.txt:27, d:.:26, d:..:25, d:test:30}}";
 	char *tok;
 	char blockPath[MAX_BLOCK_PATH_LENGTH];
@@ -33,7 +86,7 @@ int main(){
 	}
 	fwrite(buffer, sizeof(char), strlen(buffer), p);
 	fclose(p);
-
+	*/
 	/*
 	const char comma = ':';
 	const char semi[2] = ",";
@@ -86,6 +139,3 @@ int main(){
 	// test time
 	//printf("Current Time: %lu\n", (time_t)time(NULL));
 	//printf("Current Time: %ld\n", (time_t)time(NULL));
-
-	return 0;
-}

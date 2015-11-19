@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
-
+#include <stdbool.h>
 
 // environment attributes
 #define BLOCK_FILE_NAME "./fusedata."
@@ -18,6 +18,7 @@
 #define MAX_BLOCK_NUM_LENGTH 10
 #define MAX_FILE_NAME_LENGTH 50
 #define BLOCK_SIZE 4096
+#define BLOCK_NUMBER 10000
 #define MAX_INDIRECT_BLOCK_NUM 400
 #define MAX_ENTRY_PER_DIR 500
 // whether time is in the future
@@ -84,32 +85,63 @@ typedef struct fs_wcx
 	int mounted;
 	int devId;
 	int freeStart, freeEnd, root;
-	int maxBlocks;
+	int maxBlocks, freeBlockLength;
+	bool *blockMap;
+	// like bit map for checking
+	// true: free
+	// false: in use
 	//DIR_INODE *rootDir;
 }FS;
 
 int ReadFile(FILE_INODE *fInode);
 int CheckDir(DIR_INODE *dInode, int actualLinkCount);
+int CheckFile(FILE_INODE *fInode);
 int ReadNthBlock(int n, char* buffer);
+int LoadBlockArray(int blockId, int **blockArray);
+//-------------------------------------------------------------------------
+// This part is about checking free block list
+// LoadFreeBlockList, CheckAllBlocks
+int LoadFreeBlockList(FS *fs){
+	//bool allBloackFree = ture;
+	int blockLength = 0, *blockArray = NULL;
+	fs->freeBlockLength = 0;
+	printf("Init free block map from freeStart to freeEnd, ");
+	for(int i=0; i<fs->maxBlocks; i++){
+		if(!i || (fs->freeStart <= i && i <= fs->freeEnd))	fs->blockMap[i] = false;
+		else fs->blockMap[i] = true;
+	}
+	for(int i = fs->freeStart; i <= fs->freeEnd; i++){
+		blockLength = LoadBlockArray(i, &blockArray);
+		fs->freeBlockLength += blockLength;
+		//printf("%ds blocks find in %d locaiton array\n", blockLength, i);
+		for(int j=0; j<blockLength; j++){
+			int blockId = blockArray[j];
+			fs->blockMap[blockId] = false;
+		}
+		free(blockArray);
+	}
+	printf("%d free Blocks in total\n", fs->freeBlockLength);
+	return 0;
+}
 
 // Load the indirect location data
 // number of CSV vector, like: 1, 3, *** 6, 5
 // return 0, means this is not indirect location block
-int LoadBlockArray(int blockId, int *blockArray){
+int LoadBlockArray(int blockId, int **blockArray){
 	int indirectCount = 0;
 	char *tok, buffer[BLOCK_SIZE];
 	ReadNthBlock(blockId,buffer);
-	blockArray = (int *)realloc(blockArray, sizeof(int)*MAX_INDIRECT_BLOCK_NUM);
+	*blockArray = (int *)malloc(sizeof(int)*MAX_INDIRECT_BLOCK_NUM);
 	// incase realloc failed
 	const char comma[2] = ",";
 	tok = strtok(buffer, comma);
 	while(tok != NULL){
 		//printf("tok is: %s\n", tok);
-		indirectCount += sscanf(tok, "%d", &blockArray[indirectCount]);
+		indirectCount += sscanf(tok, "%d", &(*blockArray)[indirectCount]);
 		//printf("block is: %d\n", blockArray[indirectCount-1]);
 		tok = strtok(NULL, comma);
 	}
-	blockArray = realloc(blockArray, sizeof(int)*indirectCount);
+	*blockArray = realloc(*blockArray, sizeof(int)*indirectCount);
 	//fInode->locationArrayLength = indirectCount;
 	//fInode->locationArray = realloc(blockPointers, sizeof(int)*indirectCount);
 	// if realloc failed
@@ -314,6 +346,23 @@ int ReadDir(DIR_INODE *dInode){
 	return 0;
 }
 
+
+// Read file INODE
+int ReadFile(FILE_INODE *fInode){
+	//printf("Read file block Id: %d\n", blockId);
+	char buffer[BLOCK_SIZE];
+	fInode->inode_basic.type= file;
+	ReadNthBlock(fInode->inodeNumber, buffer);
+	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load basic info to Inode
+	LoadFileEntry(fInode, buffer);
+	fInode->locationArrayLength = LoadBlockArray(fInode->location, &(fInode->locationArray));
+	CheckFile(fInode);
+	
+	return 0;
+}
+
+// 
+
 /*--------------------------------------------------------------------------------------*/
 /* check part:
  * check Dir
@@ -420,6 +469,7 @@ int CheckFile(FILE_INODE *fInode){
 		printf("ERROE!!!!!File Size: %d should range from 0 to BLOCK_SIZE\n", fileSize);	return -1;
 	}
 	if(fInode->indirect){
+		//printf("%d\n", fInode->locationArray[0]);
 		if(fileSize >= length*BLOCK_SIZE){
 			printf("ERROE!!!!!File Size: %d exceeds locationArraySize: %d*BLOCK_SIZE\n", fileSize, length);	return -2;
 		}
@@ -433,19 +483,6 @@ int CheckFile(FILE_INODE *fInode){
 	return 0;
 }
 
-// Read file INODE
-int ReadFile(FILE_INODE *fInode){
-	//printf("Read file block Id: %d\n", blockId);
-	char buffer[BLOCK_SIZE];
-	fInode->inode_basic.type= file;
-	ReadNthBlock(fInode->inodeNumber, buffer);
-	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load basic info to Inode
-	LoadFileEntry(fInode, buffer);
-	fInode->locationArrayLength = LoadBlockArray(fInode->location, fInode->locationArray);
-	CheckFile(fInode);
-	
-	return 0;
-}
 int main(){
 	const char* sep = "-------------------------------------------------------";
 	const char* checkSuper = "*******************Check SUPER Block*******************";
@@ -462,6 +499,8 @@ int main(){
 	else{
 		printf("DevId is correct, file system creation time is correct\n");
 	}
+	fs->blockMap = (bool*)malloc(sizeof(bool)*fs->maxBlocks);
+	LoadFreeBlockList(fs);
 	rootDir->inodeNumber = fs->root;
 	rootDir->parent_inodeNumber = fs->freeEnd;
 	printf("\n%s\n%s\n%s\n\n", sep, checkDF, sep);
@@ -477,5 +516,6 @@ int main(){
 	// free fs & root dir
 	if(rootDir->dirRootEntry)	free(rootDir->dirRootEntry);
 	free (rootDir);
+	free(fs->blockMap);
 	free(fs);
 }
