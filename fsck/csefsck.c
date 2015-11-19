@@ -93,11 +93,33 @@ typedef struct fs_wcx
 	//DIR_INODE *rootDir;
 }FS;
 
-int ReadFile(FILE_INODE *fInode);
-int CheckDir(DIR_INODE *dInode, int actualLinkCount);
-int CheckFile(FILE_INODE *fInode);
+int ReadFile(FS *fs, FILE_INODE *fInode);
+int CheckDir(FS *fs, DIR_INODE *dInode, int actualLinkCount);
+int CheckFile(FS *fs, FILE_INODE *fInode);
 int ReadNthBlock(int n, char* buffer);
 int LoadBlockArray(int blockId, int **blockArray);
+int CheckBlockValid(FS *fs, int blockId);
+
+int CheckAllBlocks(FS *fs){
+	int valid = 1;
+	for(int i=0; i < fs->maxBlocks; i++){
+		if(fs->blockMap[i] == true)	{
+			printf("ERROR!Block: %d missing in the free block list\n", i);
+			valid = 0;
+		}
+	}
+	return valid;
+}
+int CheckBlockValid(FS *fs, int blockId){
+	if(fs->blockMap[blockId] == true){
+		fs->blockMap[blockId] = false;
+		return 1;
+	}
+	else{
+		printf("ERROR!!!!!Block: %d is already in the free block list\n", blockId);
+		return 0;
+	}
+}
 //-------------------------------------------------------------------------
 // This part is about checking free block list
 // LoadFreeBlockList, CheckAllBlocks
@@ -116,10 +138,12 @@ int LoadFreeBlockList(FS *fs){
 		//printf("%ds blocks find in %d locaiton array\n", blockLength, i);
 		for(int j=0; j<blockLength; j++){
 			int blockId = blockArray[j];
-			fs->blockMap[blockId] = false;
+			if(fs->blockMap[blockId] == false)	printf("ERROR!!!!!Block: %d is already used by super or free list block\n", blockId);
+			else fs->blockMap[blockId] = false;
 		}
 		free(blockArray);
 	}
+
 	printf("%d free Blocks in total\n", fs->freeBlockLength);
 	return 0;
 }
@@ -329,14 +353,14 @@ int LoadFileEntry(FILE_INODE *fInode, char *buffer){
 }
 
 // Read directory INODE
-int ReadDir(DIR_INODE *dInode){
+int ReadDir(FS *fs, DIR_INODE *dInode){
 	int valid, entryNum;
 	char buffer[BLOCK_SIZE];
 	dInode->inode_basic.type = directory;
 	ReadNthBlock(dInode->inodeNumber, buffer);
 	LoadInodeInfoFromBuffer(&dInode->inode_basic, buffer);	// load basic info to Inode
 	entryNum = LoadLinkEntry(dInode, buffer);	// load link entries into Inode
-	if((valid = CheckDir(dInode, entryNum))){
+	if((valid = CheckDir(fs, dInode, entryNum))){
 		return -1;
 	}
 	// free the DIR_INODE
@@ -348,7 +372,7 @@ int ReadDir(DIR_INODE *dInode){
 
 
 // Read file INODE
-int ReadFile(FILE_INODE *fInode){
+int ReadFile(FS *fs, FILE_INODE *fInode){
 	//printf("Read file block Id: %d\n", blockId);
 	char buffer[BLOCK_SIZE];
 	fInode->inode_basic.type= file;
@@ -356,7 +380,7 @@ int ReadFile(FILE_INODE *fInode){
 	LoadInodeInfoFromBuffer(&fInode->inode_basic, buffer); // load basic info to Inode
 	LoadFileEntry(fInode, buffer);
 	fInode->locationArrayLength = LoadBlockArray(fInode->location, &(fInode->locationArray));
-	CheckFile(fInode);
+	CheckFile(fs, fInode);
 	
 	return 0;
 }
@@ -387,16 +411,17 @@ int ReadFile(FILE_INODE *fInode){
  }
  // linkcount has been checked when readDir
  // check whether the dir has '.' && '..'
-int CheckDir(DIR_INODE *dInode, int entryNum){	
+int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){	
 	//printf("%d\n",entryNum);
 	int currentDirExist = 0, parentDirExist = 0, linkCount = dInode->inode_basic.linkCount;
+	bool inode = true;
 	for(int i=0; i<entryNum; i++){
 		//printf("InodeIndex: %d, Inode_type:%d, Inode_fileName:%s\n", i, dInode->dirRootEntry[i].type, dInode->dirRootEntry[i].fileName);
 		if(dInode->dirRootEntry[i].type == file){
 			FILE_INODE *fInode = (FILE_INODE*)malloc(sizeof(FILE_INODE));
 			fInode->inodeNumber = dInode->dirRootEntry[i].inodeNumber;
 			strncpy(fInode->fileName, dInode->dirRootEntry[i].fileName, strlen(dInode->dirRootEntry[i].fileName));
-			ReadFile(fInode);	//  load and check the file
+			ReadFile(fs, fInode);	//  load and check the file
 			if(fInode->locationArray)	free(fInode->locationArray);
 			free(fInode);
 		}
@@ -415,7 +440,7 @@ int CheckDir(DIR_INODE *dInode, int entryNum){
 			childDirInode->inodeNumber = dInode->dirRootEntry[i].inodeNumber;
 			childDirInode->parent_inodeNumber = dInode->inodeNumber;
 			strncpy(childDirInode->dirName, dInode->dirRootEntry[i].fileName, strlen(dInode->dirRootEntry[i].fileName));
-			ReadDir(childDirInode);
+			ReadDir(fs, childDirInode);
 			if(childDirInode->dirRootEntry)	free(childDirInode->dirRootEntry);
 			free(childDirInode);
 		}
@@ -445,7 +470,10 @@ int CheckDir(DIR_INODE *dInode, int entryNum){
 	else{
 		printf("Parent Dir miss\n");
 	}
-	
+	// check dir inode is in free list or not
+	inode = CheckBlockValid(fs, dInode->inodeNumber);
+	if(inode) {printf("Inode_block: %d is not in the free block list\n", dInode->inodeNumber);}
+	else printf("ERROR!!!!!Inode_block: %d is in the free block list\n", dInode->inodeNumber);
 	return 0;
 }
 
@@ -455,10 +483,11 @@ int CheckDir(DIR_INODE *dInode, int entryNum){
 // size is valid
 // if indirect = 0, size < BLOCK_SIZE
 // else	BLOCK_SIZE*(LENGTH-1) < size < BLOCK_SIZE*(LENGTH)
-int CheckFile(FILE_INODE *fInode){
+int CheckFile(FS *fs, FILE_INODE *fInode){
 	printf("--------------------------------------\n");
 	printf("File name: %s   Checking...\n", fInode->fileName);
 	int fileSize = (int)fInode->inode_basic.size, length = fInode->locationArrayLength;
+	bool inode = true, location = true, array = true;
 	if(!CheckTime(fInode->inode_basic.timeInfo)){
 		printf("Time info is valid\n");
 	}
@@ -480,6 +509,16 @@ int CheckFile(FILE_INODE *fInode){
 	printf("File size: %d is valid with indirect: %d ",fileSize, fInode->indirect);
 	if(fInode->indirect)	printf("with location array length: %d\n", length);
 	else	printf("\n");
+	inode = CheckBlockValid(fs, fInode->inodeNumber);
+	if(inode) {printf("Inode_block: %d is not in free list\n", fInode->inodeNumber);}	else{printf("ERROR!!!!!Inode_block: %d is in free list\n",fInode->inodeNumber);}
+	location = CheckBlockValid(fs, fInode->location);
+	if(location) {printf("Location_block: %d is not in free list\n", fInode->location);}	else{printf("ERROR!!!!!Location_block: %d is in free list\n",fInode->location);}
+	if(fInode->indirect){
+		for(int i=0; i<fInode->locationArrayLength; i++){
+			if(!CheckBlockValid(fs, fInode->locationArray[i]))	array = false;
+		}
+	}
+	if(array) printf("All location array blocks are not in free list\n");
 	return 0;
 }
 
@@ -509,10 +548,12 @@ int main(){
 	strncpy(rootDir->dirName, "root", 5);
 	// root directory parent dir block number is itself
 	// use recursio to check directory and files
-	ReadDir(rootDir);
+	ReadDir(fs, rootDir);
 	
 	// check free block list
 	printf("\n%s\n%s\n%s\n\n", sep, checkFBL, sep);
+	valid = CheckAllBlocks(fs);
+	if(valid)	printf("Free Block list DOES NOT leave any blocks missing\n");
 	// free fs & root dir
 	if(rootDir->dirRootEntry)	free(rootDir->dirRootEntry);
 	free (rootDir);
