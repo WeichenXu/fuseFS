@@ -1,9 +1,10 @@
-// File system check
+// FUSE File system check
 // Assignment 2 for OS
 // Author: Weichen Xu, wx431@nyu.edu
 // Date: 11/16/2015
 //
-// Key: no '\0' at the end of block
+// Compile: gcc -Wall -o csefsck csefsck.c
+// Run: ./csefsck
 // 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,22 +19,16 @@
 #define MAX_BLOCK_NUM_LENGTH 10
 #define MAX_FILE_NAME_LENGTH 50
 #define BLOCK_SIZE 4096
-#define BLOCK_NUMBER 10000
 #define MAX_INDIRECT_BLOCK_NUM 400
 #define MAX_ENTRY_PER_DIR 500
-// whether time is in the future
-#define INVALID_TIME(t) t > (time_t)time(NULL) 
+#define INVALID_TIME(t) t > (time_t)time(NULL) // whether time is in the future
+
 // two types of inodes in fs
-// directory
-// file
 enum fs_types {directory, file};
 typedef enum fs_types FILE_TYPE;
 
 // fs_time_wcx
 // time sturct for fs system
-// atime: access time
-// ctime: creation time
-// mtime: modification time
 typedef struct fs_time_wcx
 {
 	time_t atime;
@@ -90,15 +85,40 @@ typedef struct fs_wcx
 	// like bit map for checking
 	// true: free
 	// false: in use
-	//DIR_INODE *rootDir;
 }FS;
 
+//----------------------------------------------------------------------------
+
+// Input/Output to Block
+void BlockPathWithIndex(int n, char* path);
+int ReadNthBlock(int n, char* buffer);
+int WriteNthBlock(int n, char* buffer);
+
+// Load Inode, location array, file/dir entry
+int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer);
+int LoadLinkEntry(DIR_INODE *dInode, char* buffer);
+int LoadLinkEntryHelper(DIR_INODE *dInode, char *buffer);
+int LoadFileEntry(FILE_INODE *fInode, char *buffer);
+int LoadBlockArray(int blockId, int **blockArray);
+
+// Read Dir & File
+int ReadDir(FS *fs, DIR_INODE *dInode);
 int ReadFile(FS *fs, FILE_INODE *fInode);
+
+// Load & Check FS
+int LoadFS(FS *fs);
+int CheckTime(FS_TIME t);
 int CheckDir(FS *fs, DIR_INODE *dInode, int actualLinkCount);
 int CheckFile(FS *fs, FILE_INODE *fInode);
-int ReadNthBlock(int n, char* buffer);
-int LoadBlockArray(int blockId, int **blockArray);
+
+// Load and Check Free Block List
+int LoadFreeBlockList(FS *fs);
 int CheckBlockValid(FS *fs, int blockId);
+int CheckAllBlocks(FS *fs);
+
+
+//----------------------------------------------------------------------------
+
 
 int CheckAllBlocks(FS *fs){
 	int valid = 1;
@@ -127,7 +147,7 @@ int LoadFreeBlockList(FS *fs){
 	//bool allBloackFree = ture;
 	int blockLength = 0, *blockArray = NULL;
 	fs->freeBlockLength = 0;
-	printf("Init free block map from freeStart to freeEnd, ");
+	printf("Init free block map from freeStart to freeEnd\n");
 	for(int i=0; i<fs->maxBlocks; i++){
 		if(!i || (fs->freeStart <= i && i <= fs->freeEnd))	fs->blockMap[i] = false;
 		else fs->blockMap[i] = true;
@@ -252,10 +272,11 @@ int LoadFS(FS *fs){
 
 
 
-// Print Inode Basic info for debug
+/* Print Inode Basic info for debug
 void PrintInode(INODE* toPrint){
 	printf("%lu %d %ld\n", toPrint->size, toPrint->uid, toPrint->timeInfo.atime);
 }
+*/
 // Load basic inode info from buffer
 int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer){
 	if(toSet->type == directory){
@@ -285,7 +306,7 @@ int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer){
 
 // set link entry
 // f:name.txt:122
-int setLinkEntry(DIR_INODE *dInode, char *buffer){
+int LoadLinkEntryHelper(DIR_INODE *dInode, char *buffer){
 	char *tok, entryType;
 	FS_ENTRY *entry = (FS_ENTRY*)malloc(sizeof(FS_ENTRY)*MAX_ENTRY_PER_DIR);
 	const char comma[2] = ":";
@@ -335,7 +356,7 @@ int LoadLinkEntry(DIR_INODE *dInode, char* buffer){
 	// alllocate space for dirRootEntry
 	//dInode->dirRootEntry = (FS_ENTRY*) malloc(dInode->inode_basic.linkCount*sizeof(FS_ENTRY));
 	entryStart += sizeof("filename_to_inode_dict: {") - 1; 	// move the start of the buffer after '{'
-	return setLinkEntry(dInode, entryStart);
+	return LoadLinkEntryHelper(dInode, entryStart);
 }
 
 // Load file entry
