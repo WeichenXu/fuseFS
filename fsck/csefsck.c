@@ -92,7 +92,7 @@ typedef struct fs_wcx
 // Input/Output to Block
 void BlockPathWithIndex(int n, char* path);
 int ReadNthBlock(int n, char* buffer);
-int WriteNthBlock(int n, char* buffer);
+int WriteNthBlock(int n, size_t size, char* buffer);
 
 // Load Inode, location array, file/dir entry
 int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer);
@@ -100,6 +100,9 @@ int LoadLinkEntry(DIR_INODE *dInode, char* buffer);
 int LoadLinkEntryHelper(DIR_INODE *dInode, char *buffer);
 int LoadFileEntry(FILE_INODE *fInode, char *buffer);
 int LoadBlockArray(int blockId, int **blockArray);
+// Write Inode, file/dir entry
+int WriteDirInode(DIR_INODE *dInode);
+int WriteFileInode(FILE_INODE *fInode);
 
 // Read Dir & File
 int ReadDir(FS *fs, DIR_INODE *dInode);
@@ -226,16 +229,20 @@ int ReadNthBlock(int n, char* buffer){
 }
 // wirte n th buffer into block/file
 // wirte strlen buffer into the file
-int WriteNthBlock(int n, char* buffer){
+int WriteNthBlock(int n, char* buffer, int size){
 	char blockPath[MAX_BLOCK_PATH_LENGTH];
 	FILE *p;
-	BlockPathWithIndex(88, blockPath);	// get block file path
+	BlockPathWithIndex(n, blockPath);	// get block file path
 	p = fopen(blockPath, "w");
 	if(p == NULL){	// whether file is opened
 		printf("%s %s\n", "Unable to open the file/block for write: ", blockPath);
 		return -1;
 	}
-	fwrite(buffer, sizeof(char), BLOCK_SIZE, p);
+	if(size >= BLOCK_SIZE)	fwrite(buffer, sizeof(char), BLOCK_SIZE, p);
+	else	{
+		buffer[size] = '\0';
+		fwrite(buffer,sizeof(char), size+1, p);
+	}
 	fclose(p);
 	return 0;
 }
