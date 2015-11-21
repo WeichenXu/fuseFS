@@ -22,7 +22,7 @@
 #define MAX_INDIRECT_BLOCK_NUM 400
 #define MAX_ENTRY_PER_DIR 500
 #define INVALID_TIME(t) t > (time_t)time(NULL) // whether time is in the future
-
+#define SET_TO_CURRENT_TIME(t) t = (time_t)time(NULL)
 // two types of inodes in fs
 enum fs_types {directory, file};
 typedef enum fs_types FILE_TYPE;
@@ -92,7 +92,7 @@ typedef struct fs_wcx
 // Input/Output to Block
 void BlockPathWithIndex(int n, char* path);
 int ReadNthBlock(int n, char* buffer);
-int WriteNthBlock(int n, size_t size, char* buffer);
+int WriteNthBlock(int n, char* buffer, int size);
 
 // Load Inode, location array, file/dir entry
 int LoadInodeInfoFromBuffer(INODE* toSet, char* buffer);
@@ -110,7 +110,7 @@ int ReadFile(FS *fs, FILE_INODE *fInode);
 
 // Load & Check FS
 int LoadFS(FS *fs);
-int CheckTime(FS_TIME t);
+int CheckTime(FS_TIME *t);
 int CheckDir(FS *fs, DIR_INODE *dInode, int actualLinkCount);
 int CheckFile(FS *fs, FILE_INODE *fInode);
 
@@ -118,7 +118,10 @@ int CheckFile(FS *fs, FILE_INODE *fInode);
 int LoadFreeBlockList(FS *fs);
 int CheckBlockValid(FS *fs, int blockId);
 int CheckAllBlocks(FS *fs);
-
+// Set and Write free block list
+int WriteFreeBlockList(FS *fs);
+int AssignBlock(FS *fs);
+int FreeBlock(FS *fs);
 
 //----------------------------------------------------------------------------
 
@@ -169,6 +172,10 @@ int LoadFreeBlockList(FS *fs){
 
 	printf("%d free Blocks in total\n", fs->freeBlockLength);
 	return 0;
+}
+// Write free block list back
+int WriteFreeBlockList(FS *fs){
+
 }
 
 // Load the indirect location data
@@ -380,6 +387,50 @@ int LoadFileEntry(FILE_INODE *fInode, char *buffer){
 	return 0;
 }
 
+// Write dir inode
+int WriteDirInode(DIR_INODE *dInode){
+	char buffer[BLOCK_SIZE], entry[BLOCK_SIZE], entryType;	// generalize inode info & dir entry, then write back to the block
+	int inodeSize = 0, entrySize = 0;
+	INODE *toSet;
+	if(!dInode) return inodeSize;
+	toSet = &dInode->inode_basic;
+	// sprintf the dir inode and write back to the block
+	// basic inode
+	inodeSize += sprintf(buffer, "{size: %lu, uid: %d, gid:%d, mode:%d, atime:%ld, ctime:%ld, mtime:%ld, linkcount:%d, filename_to_inode_dict: {",
+			toSet->size, toSet->uid, toSet->gid, toSet->mode, toSet->timeInfo.atime, toSet->timeInfo.ctime, toSet->timeInfo.mtime,
+			 toSet->linkCount);
+	// filename_to_inode_dir
+	for(int i=0; i<toSet->linkCount; i++){
+		if(dInode->dirRootEntry[i].type == file)	entryType = 'f';
+		if(dInode->dirRootEntry[i].type == directory)	entryType = 'd';
+		entrySize= sprintf(entry, "%c:%s:%d, ", entryType, dInode->dirRootEntry[i].fileName, dInode->dirRootEntry[i].inodeNumber);
+		if(i == toSet->linkCount - 1){
+			strncpy(&entry[entrySize-2], "}}", 2);
+		}
+		strncpy(&buffer[inodeSize], entry, entrySize);
+		inodeSize += entrySize;
+	}
+	// write to the directory inode
+	WriteNthBlock(dInode->inodeNumber, buffer, inodeSize);
+	//printf("Write %d block, inode: %s", dInode->inodeNumber, buffer);
+	return inodeSize;
+}
+// Write file inode
+int WriteFileInode(FILE_INODE *fInode){
+	char buffer[BLOCK_SIZE];
+	int inodeSize = 0;
+	INODE *toSet;
+	if(!fInode)	return inodeSize;
+	toSet = &fInode->inode_basic;
+	inodeSize += sprintf(buffer,
+			"{size: %lu, uid: %d, gid:%d, mode:%d, linkcount:%d, atime:%ld, ctime:%ld, mtime:%ld, indirect:%d location:%d}",
+			toSet->size, toSet->uid, toSet->gid, toSet->mode, toSet->linkCount, toSet->timeInfo.atime, toSet->timeInfo.ctime, 
+			toSet->timeInfo.mtime, fInode->indirect, fInode->location);
+	WriteNthBlock(fInode->inodeNumber, buffer, inodeSize);
+	return inodeSize;
+}
+
+//---------------------------------------------------------------------------------------------------------------
 // Read directory INODE
 int ReadDir(FS *fs, DIR_INODE *dInode){
 	int valid, entryNum;
@@ -422,17 +473,24 @@ int ReadFile(FS *fs, FILE_INODE *fInode){
  * check free blocks
 */
 // check whether time are in the future
- int CheckTime(FS_TIME t){
- 	if(INVALID_TIME(t.atime)){
- 		printf("Invalid atime: %ld\n", t.atime);
+// if ine future, set to current time
+ int CheckTime(FS_TIME *t){
+ 	if(INVALID_TIME(t->atime)){
+ 		printf("Invalid atime: %ld\n", t->atime);
+ 		SET_TO_CURRENT_TIME(t->atime);
+ 		printf("Modify atime to current time: %ld\n", t->atime);
  		return -1;
  	}
- 	if(INVALID_TIME(t.mtime)){
- 		printf("Invalid mtime: %ld\n", t.mtime);
+ 	if(INVALID_TIME(t->mtime)){
+ 		printf("Invalid mtime: %ld\n", t->mtime);
+ 		SET_TO_CURRENT_TIME(t->mtime);
+ 		printf("Modify mtime to current time: %ld\n", t->mtime);
  		return -2;
  	}
- 	if(INVALID_TIME(t.ctime)){
- 		printf("Invalid ctime: %ld\n", t.ctime);
+ 	if(INVALID_TIME(t->ctime)){
+ 		printf("Invalid ctime: %ld\n", t->ctime);
+ 		SET_TO_CURRENT_TIME(t->ctime);
+ 		printf("Modify ctime to current time: %ld\n", t->ctime);
  		return -3;
  	}
  	return 0;
@@ -441,8 +499,8 @@ int ReadFile(FS *fs, FILE_INODE *fInode){
  // check whether the dir has '.' && '..'
 int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){	
 	//printf("%d\n",entryNum);
-	int currentDirExist = 0, parentDirExist = 0, linkCount = dInode->inode_basic.linkCount;
-	bool inode = true;
+	int currentDirIndex, parentDirIndex, linkCount = dInode->inode_basic.linkCount;
+	bool inode = true, currentDirExist = false, parentDirExist = false;
 	for(int i=0; i<entryNum; i++){
 		//printf("InodeIndex: %d, Inode_type:%d, Inode_fileName:%s\n", i, dInode->dirRootEntry[i].type, dInode->dirRootEntry[i].fileName);
 		if(dInode->dirRootEntry[i].type == file){
@@ -455,11 +513,15 @@ int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){
 		}
 		if(dInode->dirRootEntry[i].type == directory){
 			if(!strcmp(dInode->dirRootEntry[i].fileName,"..")){
-				parentDirExist = dInode->dirRootEntry[i].inodeNumber;
+				//parentDirExist = dInode->dirRootEntry[i].inodeNumber;
+				parentDirExist = true;
+				parentDirIndex = i;
 				continue;
 			}
 			if(!strcmp(dInode->dirRootEntry[i].fileName,".")){
-				currentDirExist = dInode->dirRootEntry[i].inodeNumber;
+				//currentDirExist = dInode->dirRootEntry[i].inodeNumber;
+				currentDirExist = true;
+				currentDirIndex = i;
 				continue;
 			}
 			// Recursively read and check child dir 
@@ -475,7 +537,7 @@ int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){
 	}
 	printf("--------------------------------------\n");
 	printf("Directory name: %s   Checking...\n", dInode->dirName);
-	if(!CheckTime(dInode->inode_basic.timeInfo)){
+	if(!CheckTime(&dInode->inode_basic.timeInfo)){
 		printf("Time info is valid\n");
 	}
 	if(entryNum == linkCount){
@@ -483,25 +545,44 @@ int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){
 	}
 	else{
 		printf("ERROR!!!!!Link count: %d DOES NOT match with the number of links in filename_to_inode_dict: %d\n", linkCount, entryNum);
+		dInode->inode_basic.linkCount = entryNum;
+		printf("Modify directory linkcount to: %d\n", entryNum);
 	}
 	if(currentDirExist){
-		if(currentDirExist != dInode->inodeNumber)	printf("ERROR!!!!! Current Directory block number: %d should be %d\n", currentDirExist, dInode->inodeNumber);
-		else printf("Current Directory block number: %d is correct\n", currentDirExist);
+		int currentInodeNumber = dInode->dirRootEntry[currentDirIndex].inodeNumber;
+		if( currentInodeNumber != dInode->inodeNumber){
+			printf("ERROR!!!!! Current Directory block number: %d should be %d\n", currentInodeNumber, dInode->inodeNumber);
+			dInode->dirRootEntry[currentDirIndex].inodeNumber = dInode->inodeNumber;
+			printf("Modify Current Directory block number to: %d\n", dInode->inodeNumber);
+		}
+		else printf("Current Directory block number: %d is correct\n", currentInodeNumber);
 	}
 	else{
 		printf("Current Dir miss!\n");
+		printf("Add a current directory entry! Will Finish this in next assignment!\n");
+		/* add a dir entry for current
+		*/
 	}
 	if(parentDirExist){
-		if(parentDirExist != dInode->parent_inodeNumber)	printf("ERROR!!!!! Parent Directory block number: %d should be %d\n", parentDirExist, dInode->parent_inodeNumber);
-		else printf("Parent Directory block number: %d is correct\n", parentDirExist);
+		int parentInodeNumber = dInode->dirRootEntry[parentDirIndex].inodeNumber;
+		if(parentInodeNumber != dInode->parent_inodeNumber){
+			printf("ERROR!!!!! Parent Directory block number: %d should be %d\n", parentInodeNumber, dInode->parent_inodeNumber);
+			dInode->dirRootEntry[parentDirIndex].inodeNumber = dInode->parent_inodeNumber;
+			printf("Modify Parent Directory block number to: %d\n", dInode->parent_inodeNumber);
+		}
+		else printf("Parent Directory block number: %d is correct\n", parentInodeNumber);
 	}
 	else{
 		printf("Parent Dir miss\n");
+		printf("Add a current directory entry! Will Finish this in next assignment!\n");
+		/* add a dir entry for parent
+		*/
 	}
 	// check dir inode is in free list or not
 	inode = CheckBlockValid(fs, dInode->inodeNumber);
 	if(inode) {printf("Inode_block: %d is not in the free block list\n", dInode->inodeNumber);}
 	else printf("ERROR!!!!!Inode_block: %d is in the free block list\n", dInode->inodeNumber);
+	WriteDirInode(dInode);
 	return 0;
 }
 
@@ -516,11 +597,13 @@ int CheckFile(FS *fs, FILE_INODE *fInode){
 	printf("File name: %s   Checking...\n", fInode->fileName);
 	int fileSize = (int)fInode->inode_basic.size, length = fInode->locationArrayLength;
 	bool inode = true, location = true, array = true;
-	if(!CheckTime(fInode->inode_basic.timeInfo)){
+	if(!CheckTime(&fInode->inode_basic.timeInfo)){
 		printf("Time info is valid\n");
 	}
 	if(fInode->locationArrayLength && !fInode->indirect){
 		printf("ERROE!!!!!Data Block is in CSV Format, Indirect should be 1\n");
+		fInode->indirect = 1;
+		printf("Modify File indirect to 1\n");
 	}
 	if(!fInode->indirect && (fileSize > BLOCK_SIZE || fileSize < 0)){
 		printf("ERROE!!!!!File Size: %d should range from 0 to BLOCK_SIZE\n", fileSize);	return -1;
@@ -547,6 +630,7 @@ int CheckFile(FS *fs, FILE_INODE *fInode){
 		}
 	}
 	if(array) printf("All location array blocks are not in free list\n");
+	WriteFileInode(fInode);
 	return 0;
 }
 
@@ -561,7 +645,7 @@ int main(){
 	printf("\n%s\n%s\n%s\n\n", sep, checkSuper, sep);
 	if((valid = LoadFS(fs))){	// load super block and check
 		printf("FATAL ERROR, this may not be FUSE file system\n");
-		return 0;
+		//return 0;
 	}
 	else{
 		printf("DevId is correct, file system creation time is correct\n");

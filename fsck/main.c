@@ -39,11 +39,21 @@ void test(int **a){
 	//return a;
 }
 int main() {
+	/*
    int *p = NULL;//(int*) malloc( 10 * sizeof(int) );
    test( &p );
    printf("%d\n", p[0]);
    if(p) free(p);
-   //return 0;
+   */
+   char buffer[100];
+   int size = 0;
+   size += sprintf(buffer, " ");
+   for(int i=0; i<3; i++){
+   	size += sprintf(buffer, "%d ", i);
+   }
+   buffer[size] = '\0';
+   printf("%s\n", buffer);
+   return 0;
 }
 /*
 int main(){
