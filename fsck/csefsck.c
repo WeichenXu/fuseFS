@@ -3,9 +3,13 @@
 // Author: Weichen Xu, wx431@nyu.edu
 // Date: 11/16/2015
 //
+// README
+// C99
 // Compile: gcc -Wall -o csefsck csefsck.c
 // Run: ./csefsck
-// 
+// Check and modify FUSE according to HW2 requirements
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -103,6 +107,7 @@ int LoadBlockArray(int blockId, int **blockArray);
 // Write Inode, file/dir entry
 int WriteDirInode(DIR_INODE *dInode);
 int WriteFileInode(FILE_INODE *fInode);
+int SetBlockArray(int blockId, int *blockArray, int blockSize);
 
 // Read Dir & File
 int ReadDir(FS *fs, DIR_INODE *dInode);
@@ -119,9 +124,9 @@ int LoadFreeBlockList(FS *fs);
 int CheckBlockValid(FS *fs, int blockId);
 int CheckAllBlocks(FS *fs);
 // Set and Write free block list
-int WriteFreeBlockList(FS *fs);
-int AssignBlock(FS *fs);
-int FreeBlock(FS *fs);
+// int WriteFreeBlockList(FS *fs);
+int AssignOneBlock(FS *fs);
+int FreeOneBlock(FS *fs, int blockId);
 
 //----------------------------------------------------------------------------
 
@@ -131,9 +136,12 @@ int CheckAllBlocks(FS *fs){
 	for(int i=0; i < fs->maxBlocks; i++){
 		if(fs->blockMap[i] == true)	{
 			printf("ERROR!Block: %d missing in the free block list\n", i);
+			FreeOneBlock(fs, i);
+			printf("Block: %d has been added to the free block list\n", i);
 			valid = 0;
 		}
 	}
+	printf("%d free Blocks in total\n", fs->freeBlockLength);
 	return valid;
 }
 int CheckBlockValid(FS *fs, int blockId){
@@ -173,10 +181,7 @@ int LoadFreeBlockList(FS *fs){
 	printf("%d free Blocks in total\n", fs->freeBlockLength);
 	return 0;
 }
-// Write free block list back
-int WriteFreeBlockList(FS *fs){
 
-}
 
 // Load the indirect location data
 // number of CSV vector, like: 1, 3, *** 6, 5
@@ -200,6 +205,50 @@ int LoadBlockArray(int blockId, int **blockArray){
 	//fInode->locationArray = realloc(blockPointers, sizeof(int)*indirectCount);
 	// if realloc failed
 	return indirectCount;
+}
+// Set the CSV vector
+int SetBlockArray(int blockId, int *blockArray, int blockSize){
+	char buffer[BLOCK_SIZE], entry[10];
+	int bufferSize = 0, entrySize = 0;
+	for(int i=0; i<blockSize; i++){
+		entrySize= sprintf(entry, "%d, ", blockArray[i]);
+		if(i == blockSize-1)	entrySize -= 2;
+		strncpy(&buffer[bufferSize], entry, entrySize);
+		bufferSize += entrySize;
+	}
+	WriteNthBlock(blockId, buffer, bufferSize);
+	return 0;
+}
+
+// Assign one block, delete from free block list
+int AssignOneBlock(FS *fs){
+	int blockNum = 0, *blockArray, assignBlock = -1;
+	for(int i = fs->freeStart; i <= fs->freeEnd; i++){
+		if((blockNum = LoadBlockArray(i, &blockArray)) > 0){
+			assignBlock = blockArray[blockNum];
+			blockArray = realloc(blockArray, sizeof(int)*(blockNum-1));
+			SetBlockArray(i, blockArray, blockNum-1);
+			fs->freeBlockLength --;
+			break;
+		}
+	}
+	free(blockArray);
+	return assignBlock;
+}
+// Free one block, add to free block list
+int FreeOneBlock(FS *fs, int blockId){
+	int *blockArray, blockNum = 0;
+	for(int i = fs->freeStart; i <= fs->freeEnd; i++){
+		if((blockNum = LoadBlockArray(i, &blockArray)) < MAX_INDIRECT_BLOCK_NUM){
+			blockArray = realloc(blockArray, sizeof(int)*(blockNum+1));
+			blockArray[blockNum] = blockId;
+			SetBlockArray(i, blockArray, blockNum+1);
+			fs->freeBlockLength ++;
+			break;
+		}
+	}
+	free(blockArray);
+	return 0;
 }
 
 // get block file path
@@ -538,10 +587,10 @@ int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){
 	printf("--------------------------------------\n");
 	printf("Directory name: %s   Checking...\n", dInode->dirName);
 	if(!CheckTime(&dInode->inode_basic.timeInfo)){
-		printf("Time info is valid\n");
+		printf("CORRECT!!!Time info is valid\n");
 	}
 	if(entryNum == linkCount){
-		printf("Link count: %d match with the number of links in filename_to_inode_dict: %d\n", linkCount, entryNum);
+		printf("CORRECT!!!Link count: %d match with the number of links in filename_to_inode_dict: %d\n", linkCount, entryNum);
 	}
 	else{
 		printf("ERROR!!!!!Link count: %d DOES NOT match with the number of links in filename_to_inode_dict: %d\n", linkCount, entryNum);
@@ -555,12 +604,20 @@ int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){
 			dInode->dirRootEntry[currentDirIndex].inodeNumber = dInode->inodeNumber;
 			printf("Modify Current Directory block number to: %d\n", dInode->inodeNumber);
 		}
-		else printf("Current Directory block number: %d is correct\n", currentInodeNumber);
+		else printf("CORRECT!!!Current Directory block number: %d is correct\n", currentInodeNumber);
 	}
 	else{
 		printf("Current Dir miss!\n");
 		printf("Add a current directory entry! Will Finish this in next assignment!\n");
 		/* add a dir entry for current
+		
+		dInode->dirRootEntry = realloc(dInode->dirRootEntry, sizeof(FS_ENTRY) * linkCount+1);
+		dInode->dirRootEntry[linkCount].type = directory;
+		char fileName[MAX_FILE_NAME_LENGTH] = ".";
+		strnpcy(&dInode->dirRootEntry[linkCount].fileName, fileName, 2);
+		dInode->dirRootEntry[linkCount].inodeNumber = AssignOneBlock(fs);
+		printf("%d\n", dInode->dirRootEntry[linkCount].inodeNumber);
+		dInode->inode_basic.linkCount ++;
 		*/
 	}
 	if(parentDirExist){
@@ -570,7 +627,7 @@ int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){
 			dInode->dirRootEntry[parentDirIndex].inodeNumber = dInode->parent_inodeNumber;
 			printf("Modify Parent Directory block number to: %d\n", dInode->parent_inodeNumber);
 		}
-		else printf("Parent Directory block number: %d is correct\n", parentInodeNumber);
+		else printf("CORRECT!!!Parent Directory block number: %d is correct\n", parentInodeNumber);
 	}
 	else{
 		printf("Parent Dir miss\n");
@@ -580,7 +637,7 @@ int CheckDir(FS *fs, DIR_INODE *dInode, int entryNum){
 	}
 	// check dir inode is in free list or not
 	inode = CheckBlockValid(fs, dInode->inodeNumber);
-	if(inode) {printf("Inode_block: %d is not in the free block list\n", dInode->inodeNumber);}
+	if(inode) {printf("CORRECT!!!Inode_block: %d is not in the free block list\n", dInode->inodeNumber);}
 	else printf("ERROR!!!!!Inode_block: %d is in the free block list\n", dInode->inodeNumber);
 	WriteDirInode(dInode);
 	return 0;
@@ -598,7 +655,7 @@ int CheckFile(FS *fs, FILE_INODE *fInode){
 	int fileSize = (int)fInode->inode_basic.size, length = fInode->locationArrayLength;
 	bool inode = true, location = true, array = true;
 	if(!CheckTime(&fInode->inode_basic.timeInfo)){
-		printf("Time info is valid\n");
+		printf("CORRECT!!!Time info is valid\n");
 	}
 	if(fInode->locationArrayLength && !fInode->indirect){
 		printf("ERROE!!!!!Data Block is in CSV Format, Indirect should be 1\n");
@@ -617,19 +674,19 @@ int CheckFile(FS *fs, FILE_INODE *fInode){
 			printf("ERROE!!!!!File Size: %d too small for locationArraySize: %d*BLOCK_SIZE\n", fileSize, length);	return -2;
 		}
 	}
-	printf("File size: %d is valid with indirect: %d ",fileSize, fInode->indirect);
+	printf("CORRECT!!!File size: %d is valid with indirect: %d ",fileSize, fInode->indirect);
 	if(fInode->indirect)	printf("with location array length: %d\n", length);
 	else	printf("\n");
 	inode = CheckBlockValid(fs, fInode->inodeNumber);
-	if(inode) {printf("Inode_block: %d is not in free list\n", fInode->inodeNumber);}	else{printf("ERROR!!!!!Inode_block: %d is in free list\n",fInode->inodeNumber);}
+	if(inode) {printf("CORRECT!!!Inode_block: %d is not in free list\n", fInode->inodeNumber);}	else{printf("ERROR!!!!!Inode_block: %d is in free list\n",fInode->inodeNumber);}
 	location = CheckBlockValid(fs, fInode->location);
-	if(location) {printf("Location_block: %d is not in free list\n", fInode->location);}	else{printf("ERROR!!!!!Location_block: %d is in free list\n",fInode->location);}
+	if(location) {printf("CORRECT!!!Location_block: %d is not in free list\n", fInode->location);}	else{printf("ERROR!!!!!Location_block: %d is in free list\n",fInode->location);}
 	if(fInode->indirect){
 		for(int i=0; i<fInode->locationArrayLength; i++){
 			if(!CheckBlockValid(fs, fInode->locationArray[i]))	array = false;
 		}
 	}
-	if(array) printf("All location array blocks are not in free list\n");
+	if(array) printf("CORRECT!!!All location array blocks are not in free list\n");
 	WriteFileInode(fInode);
 	return 0;
 }
@@ -648,7 +705,7 @@ int main(){
 		//return 0;
 	}
 	else{
-		printf("DevId is correct, file system creation time is correct\n");
+		printf("CORRECT!!!DevId is correct, file system creation time is correct\n");
 	}
 	fs->blockMap = (bool*)malloc(sizeof(bool)*fs->maxBlocks);
 	LoadFreeBlockList(fs);
@@ -665,7 +722,7 @@ int main(){
 	// check free block list
 	printf("\n%s\n%s\n%s\n\n", sep, checkFBL, sep);
 	valid = CheckAllBlocks(fs);
-	if(valid)	printf("Free Block list DOES NOT leave any blocks missing\n");
+	if(valid)	printf("CORRECT!!!Free Block list DOES NOT leave any blocks missing\n");
 	// free fs & root dir
 	if(rootDir->dirRootEntry)	free(rootDir->dirRootEntry);
 	free (rootDir);
